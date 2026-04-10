@@ -76,10 +76,15 @@ export function initAuthListener() {
   }
 
   // Safety net: if getSession() stalls (e.g. expired token refresh timing out),
-  // unblock the UI after 6 seconds rather than spinning forever.
+  // unblock the UI after 6 seconds rather than spinning forever, and clear cache
+  // to escape the stale token lock.
   const timeoutId = setTimeout(() => {
     if (useAuthStore.getState().loading) {
-      console.warn('[SCS] Auth init timed out — showing login page')
+      console.warn('[SCS] Auth init timed out — clearing stale session and showing login page')
+      localStorage.clear()
+      sessionStorage.clear()
+      setSession(null)
+      setProfile(null)
       setLoading(false)
     }
   }, 6000)
@@ -108,18 +113,21 @@ export function initAuthListener() {
     })
 
   // Listen for subsequent auth state changes (login, logout, token refresh)
-  supabase.auth.onAuthStateChange(async (_event, session) => {
+  supabase.auth.onAuthStateChange((_event, session) => {
     setSession(session)
     if (session?.user) {
-      const { data } = await supabase
+      supabase
         .from('user_profiles')
         .select('*')
         .eq('id', session.user.id)
         .single()
-      setProfile(data ?? null)
+        .then(({ data }) => {
+          setProfile(data ?? null)
+          setLoading(false)
+        })
     } else {
       setProfile(null)
+      setLoading(false)
     }
-    setLoading(false)
   })
 }

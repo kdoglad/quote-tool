@@ -2,16 +2,52 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../lib/supabase'
 import type { PriceVersion } from '../types/domain.types'
 
+let patched = false
+if (!patched) {
+  patched = true
+  const origFetch = globalThis.fetch
+  globalThis.fetch = async (...args) => {
+    const url = typeof args[0] === 'string' ? args[0] : (args[0] as Request).url
+    console.log('[Net] Sending:', url)
+    const res = await origFetch(...args)
+    console.log('[Net] Received:', url, 'Status:', res.status)
+    return res
+  }
+}
+
 export function usePriceVersions() {
   return useQuery<PriceVersion[]>({
     queryKey: ['price-versions'],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('price_versions')
-        .select('*')
-        .order('created_at', { ascending: false })
-      if (error) throw error
-      return data ?? []
+      console.log('[usePriceVersions] Starting fetch...')
+      
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => {
+        console.warn('[usePriceVersions] Force-aborting hung request after 15s')
+        controller.abort()
+      }, 15000)
+
+      try {
+        const { data, error } = await supabase
+          .from('price_versions')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .abortSignal(controller.signal)
+        
+        clearTimeout(timeoutId)
+
+        if (error) {
+          console.error('[usePriceVersions] Fetch error:', error)
+          throw error
+        }
+        
+        console.log('[usePriceVersions] Fetch success. Items:', data?.length)
+        return data ?? []
+      } catch (err) {
+        clearTimeout(timeoutId)
+        console.error('[usePriceVersions] Exception:', err)
+        throw err
+      }
     },
   })
 }
