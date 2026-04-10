@@ -48,6 +48,10 @@ interface QuoteEditorState {
    * For virtual defaults, instanceId === price_item_id — calling this persists the item.
    */
   setLineItemState: (instanceId: string, updates: Partial<QuoteLineItemState>) => void
+  /** Set a single option group selection without clobbering other groups. */
+  setOptionSelection: (instanceId: string, groupId: string, optionId: string | null) => void
+  /** Set or clear a per-quote formula override. Pass null to revert to price item default. */
+  setFormulaOverride: (instanceId: string, formula: string | null) => void
 
   /**
    * Duplicate a line item row. Inserts the copy immediately after the original.
@@ -88,10 +92,11 @@ const defaultSiteDetails: SiteDetailsFormData = {
 function makeDefaultLineItemState(instanceId: string, overrides: Partial<QuoteLineItemState> = {}): QuoteLineItemState {
   return {
     instance_id: instanceId,
-    price_item_id: instanceId, // for virtual-to-stored, instanceId === price_item_id
+    price_item_id: instanceId,
     inclusion_status: 'included' as InclusionStatus,
     qty: 1,
-    selected_option_id: null,
+    selected_options: {},
+    formula_override: null,
     modifier_type: 'none',
     modifier_value: 0,
     modifier_note: '',
@@ -216,6 +221,45 @@ export const useQuoteEditorStore = create<QuoteEditorState>()(
           isDirty: true,
         })),
 
+      setOptionSelection: (instanceId, groupId, optionId) =>
+        set((s) => {
+          const idx = s.lineItems.findIndex((li) => li.instance_id === instanceId)
+          if (idx >= 0) {
+            const li = s.lineItems[idx]
+            const next = { ...li.selected_options }
+            if (optionId === null) delete next[groupId]
+            else next[groupId] = optionId
+            return {
+              lineItems: s.lineItems.map((l, i) =>
+                i === idx ? { ...l, selected_options: next } : l
+              ),
+              isDirty: true,
+            }
+          } else {
+            // First touch of virtual item
+            const next: Record<string, string> = {}
+            if (optionId !== null) next[groupId] = optionId
+            const newItem = makeDefaultLineItemState(instanceId, { selected_options: next })
+            return { lineItems: [...s.lineItems, newItem], isDirty: true }
+          }
+        }),
+
+      setFormulaOverride: (instanceId, formula) =>
+        set((s) => {
+          const idx = s.lineItems.findIndex((li) => li.instance_id === instanceId)
+          if (idx >= 0) {
+            return {
+              lineItems: s.lineItems.map((li, i) =>
+                i === idx ? { ...li, formula_override: formula } : li
+              ),
+              isDirty: true,
+            }
+          } else {
+            const newItem = makeDefaultLineItemState(instanceId, { formula_override: formula })
+            return { lineItems: [...s.lineItems, newItem], isDirty: true }
+          }
+        }),
+
       addCustomItem: (item) =>
         set((s) => {
           const newItem: QuoteLineItemState = {
@@ -223,7 +267,8 @@ export const useQuoteEditorStore = create<QuoteEditorState>()(
             price_item_id: null,
             inclusion_status: 'included',
             qty: item.qty,
-            selected_option_id: null,
+            selected_options: {},
+            formula_override: null,
             modifier_type: item.modifier_type,
             modifier_value: item.modifier_value,
             modifier_note: item.modifier_note,
@@ -253,10 +298,12 @@ export const useQuoteEditorStore = create<QuoteEditorState>()(
     }),
     {
       name: 'quote-editor-draft',
+      // Version 4: formula_override added to QuoteLineItemState.
+      // Version 3: selected_option_id replaced with selected_options Record<groupId, optionId>.
       // Version 2: replaced overrides+customItems with lineItems array.
       // Bumping the version causes Zustand to discard any v1 localStorage
       // data rather than merging it (which would bring in stale overrides).
-      version: 2,
+      version: 4,
       migrate: () => ({
         // Return an empty state — the user will start fresh.
         // (Their actual quote data is persisted in Supabase, not just localStorage.)

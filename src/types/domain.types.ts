@@ -79,15 +79,32 @@ export interface PriceItem {
   created_at: string
 }
 
-// Variant/option for a price item (e.g. different panel brands)
-export interface PriceItemOption {
+// A named selection dimension for a price item (e.g. "Configuration", "Enclosure Type")
+export interface PriceItemOptionGroup {
   id: string
   price_item_id: string
   label: string
-  unit_price: number
-  notes: string | null
+  sort_order: number
+  is_required: boolean
+  created_at: string
+  // Populated client-side after fetch
+  options?: PriceItemOption[]
+}
+
+// One selectable choice within a group, with a price modifier
+export interface PriceItemOption {
+  id: string
+  group_id: string
+  price_item_id: string
+  label: string
+  // flat   → add modifier_value to line total
+  // percent → multiply line total by (1 + modifier_value/100)
+  // replace → set line total to modifier_value
+  modifier_type: 'flat' | 'percent' | 'replace'
+  modifier_value: number
   sort_order: number
   is_default: boolean
+  notes: string | null
   created_at: string
 }
 
@@ -171,9 +188,13 @@ export interface ComputedLineItem {
   modifier_type: ModifierType
   modifier_value: number
   modifier_note: string | null
-  computed_total: number
-  available_options: PriceItemOption[]
-  selected_option_id: string | null
+  computed_total: number        // after formula + all option group modifiers
+  formula_total: number         // formula result before option modifiers (for display)
+  default_formula: string | null  // formula stored on the price item
+  formula_override: string | null // per-quote override (null = using default)
+  active_formula: string | null   // whichever is actually being evaluated
+  option_groups: PriceItemOptionGroup[]
+  selected_options: Record<string, string> // groupId → optionId
   // Comparison
   comparison_total?: number
   delta?: number
@@ -293,7 +314,10 @@ export interface QuoteLineItemState {
   price_item_id: string | null  // null for custom items
   inclusion_status: InclusionStatus
   qty: number
-  selected_option_id: string | null
+  // groupId → optionId; only groups the user has explicitly chosen are stored
+  selected_options: Record<string, string>
+  // null = use the price item's default formula; string = per-quote override
+  formula_override: string | null
   modifier_type: ModifierType
   modifier_value: number
   modifier_note: string

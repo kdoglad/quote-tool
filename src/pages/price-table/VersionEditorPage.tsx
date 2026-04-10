@@ -1,8 +1,9 @@
 import { useState, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Plus, Send, ArrowLeft, ChevronDown, ChevronRight, Trash2, Save, Upload, Download, AlertCircle, CheckCircle2 } from 'lucide-react'
+import { Plus, Send, ArrowLeft, ChevronDown, ChevronRight, Trash2, Save, Upload, Download, AlertCircle, CheckCircle2, GripVertical, PlusCircle } from 'lucide-react'
 import { usePriceVersion } from '../../hooks/usePriceVersions'
 import { usePriceItems, useUpdatePriceItem, useCreatePriceItem, useDeletePriceItem } from '../../hooks/usePriceItems'
+import { useSingleItemOptions, useSaveItemOptions } from '../../hooks/usePriceItemOptions'
 import Button from '../../components/ui/Button'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
@@ -13,7 +14,7 @@ import FormulaEditor from '../../components/price-table/FormulaEditor'
 import PublishDialog from '../../components/price-table/PublishDialog'
 import { useToast } from '../../components/ui/Toast'
 import { CATEGORIES, UNITS } from '../../lib/constants'
-import type { PriceItem, ItemCategory } from '../../types/domain.types'
+import type { PriceItem, ItemCategory, PriceItemOptionGroup } from '../../types/domain.types'
 import { clsx } from 'clsx'
 
 // ── CSV helpers ──────────────────────────────────────────────
@@ -398,6 +399,29 @@ function PriceItemRow({
 
 // ── EditItemDialog ───────────────────────────────────────────
 
+// Local types for in-memory option editing (no DB ids yet for new entries)
+interface LocalOption {
+  _key: string
+  label: string
+  modifier_type: 'flat' | 'percent' | 'replace'
+  modifier_value: string
+  is_default: boolean
+  notes: string
+}
+interface LocalGroup {
+  _key: string
+  label: string
+  is_required: boolean
+  options: LocalOption[]
+}
+
+function makeOption(): LocalOption {
+  return { _key: crypto.randomUUID(), label: '', modifier_type: 'flat', modifier_value: '0', is_default: false, notes: '' }
+}
+function makeGroup(): LocalGroup {
+  return { _key: crypto.randomUUID(), label: '', is_required: false, options: [makeOption()] }
+}
+
 function EditItemDialog({
   item, onSave, onClose, saving,
 }: {
@@ -406,6 +430,10 @@ function EditItemDialog({
   onClose: () => void
   saving: boolean
 }) {
+  const { addToast } = useToast()
+  const saveOptions = useSaveItemOptions()
+  const { data: existingGroups = [], isLoading: groupsLoading } = useSingleItemOptions(item.id)
+
   const [name, setName] = useState(item.name)
   const [unit, setUnit] = useState(item.unit)
   const [basePrice, setBasePrice] = useState(String(item.base_price))
@@ -413,72 +441,269 @@ function EditItemDialog({
   const [notes, setNotes] = useState(item.notes ?? '')
   const [isOptional, setIsOptional] = useState(item.is_optional)
 
+  // Convert existing DB groups into local editing state
+  const [groups, setGroups] = useState<LocalGroup[] | null>(null)
+
+  // Populate local groups once DB data arrives
+  if (!groupsLoading && groups === null) {
+    if (existingGroups.length > 0) {
+      setGroups(existingGroups.map((g) => ({
+        _key: g.id,
+        label: g.label,
+        is_required: g.is_required,
+        options: (g.options ?? []).map((o) => ({
+          _key: o.id,
+          label: o.label,
+          modifier_type: o.modifier_type,
+          modifier_value: String(o.modifier_value),
+          is_default: o.is_default,
+          notes: o.notes ?? '',
+        })),
+      })))
+    } else {
+      setGroups([])
+    }
+  }
+
+  function updateGroup(key: string, patch: Partial<LocalGroup>) {
+    setGroups((gs) => gs?.map((g) => g._key === key ? { ...g, ...patch } : g) ?? [])
+  }
+  function updateOption(groupKey: string, optKey: string, patch: Partial<LocalOption>) {
+    setGroups((gs) => gs?.map((g) => g._key !== groupKey ? g : {
+      ...g,
+      options: g.options.map((o) => o._key === optKey ? { ...o, ...patch } : o),
+    }) ?? [])
+  }
+  function removeGroup(key: string) {
+    setGroups((gs) => gs?.filter((g) => g._key !== key) ?? [])
+  }
+  function removeOption(groupKey: string, optKey: string) {
+    setGroups((gs) => gs?.map((g) => g._key !== groupKey ? g : {
+      ...g,
+      options: g.options.filter((o) => o._key !== optKey),
+    }) ?? [])
+  }
+  function setDefault(groupKey: string, optKey: string) {
+    setGroups((gs) => gs?.map((g) => g._key !== groupKey ? g : {
+      ...g,
+      options: g.options.map((o) => ({ ...o, is_default: o._key === optKey })),
+    }) ?? [])
+  }
+
+  async function handleSave() {
+    // Save item fields
+    onSave({ name, unit, base_price: parseFloat(basePrice) || 0, formula: formula || null, notes: notes || null, is_optional: isOptional })
+    // Save option groups
+    if (groups !== null) {
+      try {
+        await saveOptions.mutateAsync({
+          priceItemId: item.id,
+          groups: groups
+            .filter((g) => g.label.trim())
+            .map((g, gi) => ({
+              label: g.label,
+              sort_order: gi * 10,
+              is_required: g.is_required,
+              options: g.options
+                .filter((o) => o.label.trim())
+                .map((o, oi) => ({
+                  label: o.label,
+                  modifier_type: o.modifier_type,
+                  modifier_value: parseFloat(o.modifier_value) || 0,
+                  sort_order: oi * 10,
+                  is_default: o.is_default,
+                  notes: o.notes,
+                })),
+            })),
+        })
+      } catch (err) {
+        addToast('error', err instanceof Error ? err.message : 'Failed to save option groups')
+      }
+    }
+  }
+
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()} title={`Edit: ${item.name}`} size="xl">
-      <div className="space-y-4">
+      <div className="space-y-5 max-h-[80vh] overflow-y-auto pr-1">
+        {/* ── Item fields ── */}
         <div className="grid grid-cols-3 gap-3">
           <div className="col-span-2">
             <Input label="Name" value={name} onChange={(e) => setName(e.target.value)} />
           </div>
           <div>
-            <code className="block text-xs text-slate-500 font-mono mb-1.5">Code</code>
+            <p className="text-xs text-slate-500 font-mono mb-1.5">Code</p>
             <div className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-400 font-mono">
               {item.code}
             </div>
           </div>
         </div>
         <div className="grid grid-cols-2 gap-4">
-          <Select
-            label="Unit"
-            value={unit}
-            onChange={(e) => setUnit(e.target.value)}
-            options={UNITS}
-          />
-          <Input
-            label="Base price ($)"
-            type="number"
-            step="0.01"
-            value={basePrice}
-            onChange={(e) => setBasePrice(e.target.value)}
-            prefix="$"
-          />
+          <Select label="Unit" value={unit} onChange={(e) => setUnit(e.target.value)} options={UNITS} />
+          <Input label="Base price ($)" type="number" step="0.01" value={basePrice}
+            onChange={(e) => setBasePrice(e.target.value)} prefix="$" />
         </div>
         <div>
-          <label className="block text-sm text-slate-400 mb-1.5">Formula</label>
-          <FormulaEditor
-            value={formula}
-            onChange={setFormula}
-            basePrice={parseFloat(basePrice) || 0}
-          />
+          <label className="block text-sm text-slate-400 mb-1">
+            Default formula
+            <span className="ml-2 text-xs text-slate-600 font-normal">
+              (template — salespeople can override per quote)
+            </span>
+          </label>
+          <FormulaEditor value={formula} onChange={setFormula} basePrice={parseFloat(basePrice) || 0} />
         </div>
-        <Input
-          label="Notes"
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-          placeholder="Internal notes about this line item"
-        />
+        <Input label="Notes" value={notes} onChange={(e) => setNotes(e.target.value)}
+          placeholder="Internal notes about this line item" />
         <label className="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={isOptional}
-            onChange={(e) => setIsOptional(e.target.checked)}
-            className="rounded border-slate-700 bg-slate-800 text-brand-500"
-          />
+          <input type="checkbox" checked={isOptional} onChange={(e) => setIsOptional(e.target.checked)}
+            className="rounded border-slate-700 bg-slate-800 text-brand-500" />
           <span className="text-sm text-slate-400">Optional (excluded by default in new quotes)</span>
         </label>
-        <div className="flex justify-end gap-2 pt-2">
+
+        {/* ── Option Groups ── */}
+        <div className="border-t border-slate-800 pt-4">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <p className="text-sm font-medium text-slate-300">Configuration Options</p>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Add selection groups (e.g. "Enclosure Type") with options that adjust the price.
+              </p>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={<PlusCircle className="w-3.5 h-3.5" />}
+              onClick={() => setGroups((gs) => [...(gs ?? []), makeGroup()])}
+            >
+              Add Group
+            </Button>
+          </div>
+
+          {groupsLoading || groups === null ? (
+            <div className="flex justify-center py-4"><Spinner /></div>
+          ) : groups.length === 0 ? (
+            <p className="text-xs text-slate-600 py-2">
+              No option groups — this item has a fixed price from its base price / formula.
+            </p>
+          ) : (
+            <div className="space-y-4">
+              {groups.map((group) => (
+                <div key={group._key} className="bg-slate-800/50 border border-slate-700 rounded-lg p-3">
+                  {/* Group header */}
+                  <div className="flex items-center gap-2 mb-3">
+                    <GripVertical className="w-4 h-4 text-slate-600 shrink-0" />
+                    <input
+                      type="text"
+                      value={group.label}
+                      onChange={(e) => updateGroup(group._key, { label: e.target.value })}
+                      placeholder="Group label, e.g. Enclosure Type"
+                      className="flex-1 bg-slate-800 border border-slate-700 rounded px-2 py-1.5
+                                 text-sm text-white placeholder-slate-600
+                                 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                    />
+                    <label className="flex items-center gap-1.5 text-xs text-slate-500 whitespace-nowrap cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={group.is_required}
+                        onChange={(e) => updateGroup(group._key, { is_required: e.target.checked })}
+                        className="rounded border-slate-600 bg-slate-700 text-brand-500"
+                      />
+                      Required
+                    </label>
+                    <button
+                      onClick={() => removeGroup(group._key)}
+                      className="text-slate-600 hover:text-red-400 transition-colors p-1"
+                      title="Remove group"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  {/* Options within group */}
+                  <div className="space-y-1.5 ml-6">
+                    <div className="grid grid-cols-[1fr_100px_90px_24px_24px] gap-1.5 text-xs text-slate-600 mb-1 px-1">
+                      <span>Option label</span>
+                      <span>Modifier type</span>
+                      <span>Value</span>
+                      <span title="Default">Def.</span>
+                      <span />
+                    </div>
+                    {group.options.map((opt) => (
+                      <div key={opt._key} className="grid grid-cols-[1fr_100px_90px_24px_24px] gap-1.5 items-center">
+                        <input
+                          type="text"
+                          value={opt.label}
+                          onChange={(e) => updateOption(group._key, opt._key, { label: e.target.value })}
+                          placeholder="e.g. External stainless"
+                          className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white
+                                     placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                        />
+                        <select
+                          value={opt.modifier_type}
+                          onChange={(e) => updateOption(group._key, opt._key, { modifier_type: e.target.value as LocalOption['modifier_type'] })}
+                          className="bg-slate-800 border border-slate-700 rounded px-1.5 py-1 text-xs text-white
+                                     focus:outline-none focus:ring-1 focus:ring-brand-500"
+                        >
+                          <option value="flat">+ flat $</option>
+                          <option value="percent">+ percent %</option>
+                          <option value="replace">= replace $</option>
+                        </select>
+                        <div className="relative">
+                          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500 text-xs pointer-events-none">
+                            {opt.modifier_type === 'percent' ? '%' : '$'}
+                          </span>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={opt.modifier_value}
+                            onChange={(e) => updateOption(group._key, opt._key, { modifier_value: e.target.value })}
+                            className="w-full bg-slate-800 border border-slate-700 rounded pl-5 pr-2 py-1
+                                       text-xs text-white font-mono text-right
+                                       focus:outline-none focus:ring-1 focus:ring-brand-500"
+                          />
+                        </div>
+                        <button
+                          onClick={() => setDefault(group._key, opt._key)}
+                          title={opt.is_default ? 'Default option' : 'Set as default'}
+                          className={clsx(
+                            'w-5 h-5 rounded-full border text-xs flex items-center justify-center transition-colors',
+                            opt.is_default
+                              ? 'bg-brand-600 border-brand-500 text-white'
+                              : 'border-slate-600 text-slate-600 hover:border-slate-400'
+                          )}
+                        >
+                          {opt.is_default ? '●' : '○'}
+                        </button>
+                        <button
+                          onClick={() => removeOption(group._key, opt._key)}
+                          className="text-slate-600 hover:text-red-400 transition-colors"
+                          title="Remove option"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      onClick={() => setGroups((gs) => gs?.map((g) => g._key !== group._key ? g : {
+                        ...g, options: [...g.options, makeOption()],
+                      }) ?? [])}
+                      className="text-xs text-slate-600 hover:text-slate-400 flex items-center gap-1 mt-1 transition-colors"
+                    >
+                      <Plus className="w-3 h-3" /> Add option
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* ── Actions ── */}
+        <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
           <Button
             variant="primary"
-            loading={saving}
-            onClick={() => onSave({
-              name,
-              unit,
-              base_price: parseFloat(basePrice) || 0,
-              formula: formula || null,
-              notes: notes || null,
-              is_optional: isOptional,
-            })}
+            loading={saving || saveOptions.isPending}
+            onClick={handleSave}
           >
             Save Changes
           </Button>
@@ -543,7 +768,10 @@ function AddItemDialog({
           />
         </div>
         <div>
-          <label className="block text-sm text-slate-400 mb-1.5">Formula (optional)</label>
+          <label className="block text-sm text-slate-400 mb-1">
+            Default formula
+            <span className="ml-2 text-xs text-slate-600 font-normal">(optional — overridable per quote)</span>
+          </label>
           <FormulaEditor value={formula} onChange={setFormula} basePrice={parseFloat(basePrice) || 0} />
         </div>
         <Input label="Notes" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Internal notes" />

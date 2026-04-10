@@ -23,7 +23,8 @@ interface LineItemsTableProps {
   onModifierChange: (instanceId: string, type: ModifierType, value: number, note: string) => void
   onDuplicate: (instanceId: string) => void
   onRemove: (instanceId: string) => void
-  onVariantChange: (instanceId: string, optionId: string | null) => void
+  onOptionChange: (instanceId: string, groupId: string, optionId: string | null) => void
+  onFormulaOverride: (instanceId: string, formula: string | null) => void
   onAddCustomItem: () => void
 }
 
@@ -38,7 +39,8 @@ export default function LineItemsTable({
   onModifierChange,
   onDuplicate,
   onRemove,
-  onVariantChange,
+  onOptionChange,
+  onFormulaOverride,
   onAddCustomItem,
 }: LineItemsTableProps) {
   const [expandedCategories, setExpandedCategories] = useState<Set<ItemCategory>>(
@@ -131,7 +133,8 @@ export default function LineItemsTable({
                         onModifierChange={(type, value, note) => onModifierChange(item.instance_id, type, value, note)}
                         onDuplicate={() => onDuplicate(item.instance_id)}
                         onRemove={item.is_removable ? () => onRemove(item.instance_id) : undefined}
-                        onVariantChange={(optionId) => onVariantChange(item.instance_id, optionId)}
+                        onOptionChange={(groupId, optionId) => onOptionChange(item.instance_id, groupId, optionId)}
+                        onFormulaOverride={(formula) => onFormulaOverride(item.instance_id, formula)}
                       />
                     ))}
                   </tbody>

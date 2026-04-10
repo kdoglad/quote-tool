@@ -8,6 +8,7 @@ import { usePriceItemOptions } from '../../hooks/usePriceItemOptions'
 import { useComputedLineItems } from '../../hooks/useComputedLineItems'
 import { useSaveQuote, useQuote } from '../../hooks/useQuotes'
 import { useAuthStore } from '../../stores/authStore'
+import { supabase } from '../../lib/supabase'
 import { useToast } from '../../components/ui/Toast'
 import SiteDetailsForm from '../../components/quote/SiteDetailsForm'
 import LineItemsTable from '../../components/quote/LineItemsTable'
@@ -33,17 +34,17 @@ export default function QuoteEditorPage() {
     selectedVersionId, comparisonVersionId,
     lineItems,
     setSelectedVersion, setComparisonVersion,
-    setLineItemState, duplicateLineItem, removeLineItem, addCustomItem,
+    setLineItemState, setOptionSelection, setFormulaOverride, duplicateLineItem, removeLineItem, addCustomItem,
     markSaved, setQuoteId,
   } = useQuoteEditorStore()
 
   const { data: versions = [] } = usePriceVersions()
   const { data: priceItems = [], isLoading: itemsLoading } = usePriceItems(selectedVersionId ?? undefined)
   const { data: comparisonItems = [] } = usePriceItems(comparisonVersionId ?? undefined)
-  const { data: priceItemOptions = [] } = usePriceItemOptions(priceItems.map((p) => p.id))
+  const { data: optionData } = usePriceItemOptions(priceItems.map((p) => p.id))
 
-  const computedItems = useComputedLineItems(priceItems, lineItems, scope, priceItemOptions)
-  const comparisonComputedItems = useComputedLineItems(comparisonItems, [], scope, [])
+  const computedItems = useComputedLineItems(priceItems, lineItems, scope, optionData)
+  const comparisonComputedItems = useComputedLineItems(comparisonItems, [], scope)
 
   const saveQuote = useSaveQuote()
 
@@ -83,17 +84,22 @@ export default function QuoteEditorPage() {
     removeLineItem(instanceId)
   }, [removeLineItem])
 
-  const handleVariantChange = useCallback((instanceId: string, optionId: string | null) => {
-    setLineItemState(instanceId, { selected_option_id: optionId })
-  }, [setLineItemState])
+  const handleOptionChange = useCallback((instanceId: string, groupId: string, optionId: string | null) => {
+    setOptionSelection(instanceId, groupId, optionId)
+  }, [setOptionSelection])
+
+  const handleFormulaOverride = useCallback((instanceId: string, formula: string | null) => {
+    setFormulaOverride(instanceId, formula)
+  }, [setFormulaOverride])
 
   const handleAddCustomItem = useCallback((item: CustomLineItem) => {
     addCustomItem(item)
   }, [addCustomItem])
 
   async function handleSave() {
-    if (!profile) return
     try {
+      // Get user ID from session — works even when user_profiles row doesn't exist yet
+      const { data: { user } } = await supabase.auth.getUser()
       const quoteData = {
         id: quoteId ?? undefined,
         project_name: siteDetails.project_name || 'Untitled Quote',
@@ -115,7 +121,7 @@ export default function QuoteEditorPage() {
         existing_solar_kw: scope.existing_solar_kw ?? 0,
         price_version_id: selectedVersionId!,
         internal_notes: siteDetails.internal_notes || null,
-        created_by: profile.id,
+        created_by: user?.id ?? null,
       }
       const saved = await saveQuote.mutateAsync(quoteData)
       setQuoteId(saved.id)
@@ -359,7 +365,8 @@ export default function QuoteEditorPage() {
                 onModifierChange={handleModifierChange}
                 onDuplicate={handleDuplicate}
                 onRemove={handleRemove}
-                onVariantChange={handleVariantChange}
+                onOptionChange={handleOptionChange}
+                onFormulaOverride={handleFormulaOverride}
                 onAddCustomItem={() => setShowCustomItemForm(true)}
               />
             )}

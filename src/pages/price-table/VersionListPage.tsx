@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { PlusCircle, ChevronRight, Lock, Edit3 } from 'lucide-react'
 import { usePriceVersions, useCreateDraftVersion } from '../../hooks/usePriceVersions'
-import { useAuthStore } from '../../stores/authStore'
 import { useToast } from '../../components/ui/Toast'
 import Button from '../../components/ui/Button'
 import Badge from '../../components/ui/Badge'
@@ -13,7 +12,6 @@ import type { PriceVersion } from '../../types/domain.types'
 
 export default function VersionListPage() {
   const { data: versions, isLoading } = usePriceVersions()
-  const { profile } = useAuthStore()
   const createDraft = useCreateDraftVersion()
   const { addToast } = useToast()
 
@@ -26,21 +24,23 @@ export default function VersionListPage() {
   const draftVersions = versions?.filter((v) => v.is_draft) ?? []
 
   async function handleCreate() {
-    if (!newName.trim() || !profile) return
+    if (!newName.trim()) return
     try {
       const result = await createDraft.mutateAsync({
         versionName: newName.trim(),
         notes: newNotes.trim(),
         sourceVersionId: sourceId || undefined,
-        userId: profile.id,
       })
       addToast('success', `Draft version "${result.version_name}" created.`)
       setShowNewDialog(false)
       setNewName('')
       setNewNotes('')
       setSourceId('')
-    } catch (err) {
-      addToast('error', err instanceof Error ? err.message : 'Failed to create version')
+    } catch (err: unknown) {
+      const msg = (err as { message?: string; details?: string; hint?: string })
+      const detail = [msg.message, msg.details, msg.hint].filter(Boolean).join(' — ')
+      addToast('error', detail || 'Failed to create version')
+      console.error('[createDraft]', err)
     }
   }
 
